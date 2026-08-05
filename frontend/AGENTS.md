@@ -1,3 +1,3 @@
-# Expo HAS CHANGED
+# Expo project guidance
 
-Read the exact versioned docs at https://docs.expo.dev/versions/v57.0.0/ before writing any code.
+This project currently targets Expo SDK 54. Use the exact SDK 54 documentation and keep Expo package versions aligned before changing native dependencies.
