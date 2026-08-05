@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "frontend",
+    "slug": "frontend",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/logoRecce.png",
+    "splash": {
+      "image": "./assets/logoRecce.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/logoRecce.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/logoRecce.png",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyD_u_KQBTFQq7fHpN-iiGHiBxVhZmJbl74"
+        }
+      }
+    },
+    "plugins": [
+      "expo-font"
+    ]
+  }
+}
