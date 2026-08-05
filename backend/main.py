@@ -1,61 +1,64 @@
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-import os
 
-load_dotenv()
 from api.routes import router
-from database import models
-from database.database import engine
+from config import settings
+from database.database import SessionLocal, engine
+from database.models import Base, PacenoteFeedback
+from geometry.classification_engine import train_model
 
-models.Base.metadata.create_all(bind=engine)
-from contextlib import asynccontextmanager
-from database.database import SessionLocal
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup logic
-    print("Loading ML models from database...")
-    from database.models import PacenoteFeedback
-    from geometry.classification_engine import train_model
-    
-    db = SessionLocal()
+async def lifespan(_: FastAPI):
+    if settings.auto_create_db:
+        Base.metadata.create_all(bind=engine)
+
+    database = SessionLocal()
     try:
-        all_feedbacks = db.query(PacenoteFeedback).all()
-        # Group by driver
-        driver_feedbacks = {}
-        for fb in all_feedbacks:
-            driver_feedbacks.setdefault(fb.driver_id, []).append(fb)
-            
-        for driver_id, feedbacks in driver_feedbacks.items():
-            success = train_model(feedbacks, driver_id)
-            if success:
-                print(f"Loaded and trained ML model for driver: {driver_id}")
-    except Exception as e:
-        print(f"Error loading models: {e}")
+        feedbacks = database.query(PacenoteFeedback).all()
+        feedbacks_by_driver: dict[str, list[PacenoteFeedback]] = {}
+        for feedback in feedbacks:
+            feedbacks_by_driver.setdefault(feedback.driver_id, []).append(feedback)
+        for driver_id, driver_feedbacks in feedbacks_by_driver.items():
+            if train_model(driver_feedbacks, driver_id):
+                logger.info("Loaded personalized classifier for driver %s", driver_id)
+    except Exception:
+        logger.exception("Could not preload personalized classifiers")
     finally:
-        db.close()
+        database.close()
     yield
-    # Shutdown logic
-    print("Shutting down...")
+
 
 app = FastAPI(
-    title="RecceMind MVP",
-    description="Motor geométrico para notas de rally",
-    version="1.0.0",
-    lifespan=lifespan
+    title="RecceMind API",
+    description="Motor geométrico para generar borradores de notas de rally",
+    version="0.2.0",
+    lifespan=lifespan,
 )
 
+origins = list(settings.allowed_origins)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=origins,
+    allow_credentials="*" not in origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
-
 app.include_router(router)
+
 
 @app.get("/")
 def root():
-    return {"message": "RecceMind API is running. Geometry engine initialized."}
+    return {
+        "message": "RecceMind API is running",
+        "health": "/api/health",
+        "docs": "/docs",
+    }

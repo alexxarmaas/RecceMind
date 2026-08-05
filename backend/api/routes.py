@@ -1,258 +1,265 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional
+from __future__ import annotations
+
+import json
+import logging
 import os
-import re
+import tempfile
+from pathlib import Path
+from typing import Annotated
+
 import polyline
-import xml.etree.ElementTree as ET
 import speech_recognition as sr
+from defusedxml import ElementTree as ET
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from pydantic import TypeAdapter, ValidationError
+from pydub import AudioSegment
 from sqlalchemy.orm import Session
-from fastapi import Depends, UploadFile, File
 
-from geometry import analyze_polyline, classify_curves, generate_pacenotes, extract_crests, calculate_speed_profile, parse_telemetry_csv
-from geometry.classification_engine import train_model
-from database.database import SessionLocal
+from api.schemas import CoordsRequest, FeedbackRequest, GpxRequest, PolylineRequest, RouteRequest
+from config import settings
 from database import models
-from services import MapsService
+from database.database import SessionLocal
+from geometry import (
+    analyze_polyline,
+    calculate_speed_profile,
+    classify_curves,
+    extract_crests,
+    generate_pacenotes,
+    parse_telemetry_csv,
+)
+from geometry.classification_engine import train_model
+from services import MapsService, MapsServiceError
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["geometry"])
-# Dummy comment to trigger uvicorn reload
+_threshold_adapter = TypeAdapter(dict[int, float])
 
-class RouteRequest(BaseModel):
-    origin: str
-    destination: str
-    thresholds: Optional[dict] = None
-    driver_id: Optional[str] = "default"
 
-class PolylineRequest(BaseModel):
-    polyline: str
-    thresholds: Optional[dict] = None
-    driver_id: Optional[str] = "default"
-
-class GpxRequest(BaseModel):
-    gpx_content: str
-    thresholds: Optional[dict] = None
-    driver_id: Optional[str] = "default"
-
-class CoordsRequest(BaseModel):
-    coordinates: List[List[float]]
-    thresholds: Optional[dict] = None
-    driver_id: Optional[str] = "default"
-
-class FeedbackRequest(BaseModel):
-    radius: float
-    heading_change: float
-    length: float
-    original_classification: int
-    user_classification: int
-    driver_id: Optional[str] = "default"
-
-# Dependency
 def get_db():
-    db = SessionLocal()
+    database = SessionLocal()
     try:
-        yield db
+        yield database
     finally:
-        db.close()
+        database.close()
+
+
+async def _read_limited(upload: UploadFile) -> bytes:
+    content = await upload.read(settings.max_upload_bytes + 1)
+    if len(content) > settings.max_upload_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds the {settings.max_upload_bytes} byte upload limit",
+        )
+    return content
+
+
+def _analyze_encoded_polyline(
+    encoded_polyline: str,
+    thresholds: dict[int, float] | None,
+    driver_id: str,
+    telemetry: list[dict] | None = None,
+    extra_events: list[dict] | None = None,
+) -> dict:
+    try:
+        points = polyline.decode(encoded_polyline)
+    except (IndexError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid encoded polyline") from exc
+
+    curves = analyze_polyline(encoded_polyline, telemetry=telemetry)
+    classified_curves = classify_curves(curves, thresholds, driver_id)
+    pacenotes = generate_pacenotes(classified_curves, extra_events)
+    return {
+        "polyline": encoded_polyline,
+        "curves": classified_curves,
+        "pacenotes": pacenotes,
+        "speed_profile": calculate_speed_profile(points),
+    }
+
+
+@router.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
 
 @router.post("/analyze-route")
 def analyze_route(request: RouteRequest):
-    api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="Google Maps API Key not configured")
-        
-    maps_service = MapsService(api_key=api_key)
-    route_data = maps_service.get_route(request.origin, request.destination)
-    
-    if not route_data or 'routes' not in route_data or len(route_data['routes']) == 0:
-        raise HTTPException(status_code=404, detail="Route not found")
-        
-    polyline_str = route_data['routes'][0]['polyline']['encodedPolyline']
-    
-    curves = analyze_polyline(polyline_str)
-    classified_curves = classify_curves(curves, request.thresholds, request.driver_id)
-    pacenotes = generate_pacenotes(classified_curves)
-    points = polyline.decode(polyline_str)
-    speed_profile = calculate_speed_profile(points)
-    
-    return {
-        "polyline": polyline_str,
-        "distanceMeters": route_data['routes'][0].get('distanceMeters', 0),
-        "duration": route_data['routes'][0].get('duration', "0s"),
-        "curves": classified_curves,
-        "pacenotes": pacenotes,
-        "speed_profile": speed_profile
-    }
+    if not settings.google_maps_api_key:
+        raise HTTPException(status_code=503, detail="Google Maps API key is not configured")
+
+    maps_service = MapsService(
+        api_key=settings.google_maps_api_key,
+        timeout_seconds=settings.external_request_timeout_seconds,
+    )
+    try:
+        route_data = maps_service.get_route(request.origin, request.destination)
+    except MapsServiceError as exc:
+        logger.warning("Google Routes failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    route = route_data["routes"][0]
+    encoded_polyline = route["polyline"]["encodedPolyline"]
+    result = _analyze_encoded_polyline(
+        encoded_polyline,
+        request.thresholds,
+        request.driver_id,
+    )
+    result.update(
+        {
+            "distanceMeters": route.get("distanceMeters", 0),
+            "duration": route.get("duration", "0s"),
+        }
+    )
+    return result
+
 
 @router.post("/process-polyline")
 def process_polyline(request: PolylineRequest):
-    # Process the polyline using the geometry engine
-    curves = analyze_polyline(request.polyline)
-    classified_curves = classify_curves(curves, request.thresholds, request.driver_id)
-    pacenotes = generate_pacenotes(classified_curves)
-    points = polyline.decode(request.polyline)
-    speed_profile = calculate_speed_profile(points)
-    
-    return {
-        "polyline": request.polyline,
-        "curves": classified_curves,
-        "pacenotes": pacenotes,
-        "speed_profile": speed_profile
-    }
+    return _analyze_encoded_polyline(request.polyline, request.thresholds, request.driver_id)
+
 
 @router.post("/process-gpx")
 def process_gpx(request: GpxRequest):
-    points = []
-    elevations = []
-    
     try:
         root = ET.fromstring(request.gpx_content)
-        # Handle namespaces if any by removing them or using wildcard
-        # For simplicity, we just find all elements regardless of namespace
-        namespace = ''
-        if '}' in root.tag:
-            namespace = root.tag.split('}')[0] + '}'
-            
-        for trkpt in root.iter(f'{namespace}trkpt'):
-            lat = float(trkpt.get('lat'))
-            lon = float(trkpt.get('lon'))
-            ele_elem = trkpt.find(f'{namespace}ele')
-            
-            ele = float(ele_elem.text) if ele_elem is not None else 0.0
-            
-            points.append((lat, lon))
-            elevations.append(ele)
-    except Exception as e:
-        # Fallback to regex if XML parsing fails
-        pattern = re.compile(r'<trkpt\s+lat="([^"]+)"\s+lon="([^"]+)">')
-        matches = pattern.findall(request.gpx_content)
-        if not matches:
-            raise HTTPException(status_code=400, detail="No track points found in GPX")
-        points = [(float(lat), float(lon)) for lat, lon in matches]
-        elevations = [0.0] * len(points)
-        
-    if not points:
-        raise HTTPException(status_code=400, detail="No track points found in GPX")
-        
+    except ET.ParseError as exc:
+        raise HTTPException(status_code=400, detail="Invalid GPX XML") from exc
+
+    namespace = root.tag.split("}")[0] + "}" if "}" in root.tag else ""
+    points: list[tuple[float, float]] = []
+    elevations: list[float] = []
+    for track_point in root.iter(f"{namespace}trkpt"):
+        try:
+            latitude = float(track_point.attrib["lat"])
+            longitude = float(track_point.attrib["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+            continue
+        elevation_element = track_point.find(f"{namespace}ele")
+        try:
+            elevation = float(elevation_element.text) if elevation_element is not None else 0.0
+        except (TypeError, ValueError):
+            elevation = 0.0
+        points.append((latitude, longitude))
+        elevations.append(elevation)
+
+    if len(points) < 3:
+        raise HTTPException(status_code=400, detail="GPX must contain at least three valid track points")
+
     encoded_polyline = polyline.encode(points)
-    
-    curves = analyze_polyline(encoded_polyline)
-    classified_curves = classify_curves(curves, request.thresholds, request.driver_id)
-    pacenotes = generate_pacenotes(classified_curves)
-    
-    # Extract crests and merge
     crests = extract_crests(points, elevations)
-    if crests:
-        # We need to approximate distance of pacenotes from start to sort them.
-        # generate_pacenotes uses distances between curves, let's keep it simple
-        # and just append them for now. A proper sort requires absolute distance.
-        pacenotes.extend(crests)
-    
-    speed_profile = calculate_speed_profile(points)
-    
-    return {
-        "polyline": encoded_polyline,
-        "distanceMeters": 0,
-        "duration": "0s",
-        "curves": classified_curves,
-        "pacenotes": pacenotes,
-        "speed_profile": speed_profile
-    }
+    result = _analyze_encoded_polyline(
+        encoded_polyline,
+        request.thresholds,
+        request.driver_id,
+        extra_events=crests,
+    )
+    result.update({"distanceMeters": 0, "duration": "0s"})
+    return result
+
 
 @router.post("/process-telemetry")
-async def process_telemetry(file: UploadFile = File(...), thresholds: Optional[str] = None, driver_id: Optional[str] = "default"):
-    import json
+async def process_telemetry(
+    file: Annotated[UploadFile, File(...)],
+    thresholds: Annotated[str | None, Form()] = None,
+    driver_id: Annotated[str, Form(min_length=1, max_length=100)] = "default",
+):
     parsed_thresholds = None
     if thresholds:
         try:
-            parsed_thresholds = json.loads(thresholds)
-        except json.JSONDecodeError:
-            pass
+            parsed_thresholds = _threshold_adapter.validate_python(json.loads(thresholds))
+        except (json.JSONDecodeError, ValidationError) as exc:
+            raise HTTPException(status_code=422, detail="Invalid telemetry thresholds") from exc
 
-    content = await file.read()
-    content_str = content.decode('utf-8')
-    
-    points, telemetry = parse_telemetry_csv(content_str)
-    if not points:
-        raise HTTPException(status_code=400, detail="No valid coordinates found in telemetry file")
-        
+    content = await _read_limited(file)
+    try:
+        content_text = content.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Telemetry CSV must use UTF-8 encoding") from exc
+
+    points, telemetry = parse_telemetry_csv(content_text)
+    if len(points) < 3:
+        raise HTTPException(status_code=400, detail="Telemetry must contain at least three valid coordinates")
+
     encoded_polyline = polyline.encode(points)
-    
-    curves = analyze_polyline(encoded_polyline, telemetry=telemetry)
-    classified_curves = classify_curves(curves, parsed_thresholds, driver_id)
-    pacenotes = generate_pacenotes(classified_curves)
-    
-    # We could calculate a theoretical speed profile, or return the actual speeds from telemetry.
-    # For now, let's just return theoretical for consistency, or a blend.
-    speed_profile = calculate_speed_profile(points)
-    
-    return {
-        "polyline": encoded_polyline,
-        "distanceMeters": 0,
-        "duration": "0s",
-        "curves": classified_curves,
-        "pacenotes": pacenotes,
-        "speed_profile": speed_profile
-    }
+    result = _analyze_encoded_polyline(
+        encoded_polyline,
+        parsed_thresholds,
+        driver_id,
+        telemetry=telemetry,
+    )
+    result.update({"distanceMeters": 0, "duration": "0s"})
+    return result
+
 
 @router.post("/process-coords")
 def process_coords(request: CoordsRequest):
-    encoded_polyline = polyline.encode(request.coordinates)
-    
-    curves = analyze_polyline(encoded_polyline)
-    classified_curves = classify_curves(curves, request.thresholds, request.driver_id)
-    pacenotes = generate_pacenotes(classified_curves)
-    
-    points = [(c[0], c[1]) for c in request.coordinates]
-    speed_profile = calculate_speed_profile(points)
-    
-    return {
-        "polyline": encoded_polyline,
-        "curves": classified_curves,
-        "pacenotes": pacenotes,
-        "speed_profile": speed_profile
-    }
+    points = [(coordinate[0], coordinate[1]) for coordinate in request.coordinates]
+    return _analyze_encoded_polyline(
+        polyline.encode(points),
+        request.thresholds,
+        request.driver_id,
+    )
+
 
 @router.post("/feedback")
-def submit_feedback(request: FeedbackRequest, db: Session = Depends(get_db)):
+def submit_feedback(request: FeedbackRequest, database: Session = Depends(get_db)):
     feedback_entry = models.PacenoteFeedback(
         radius=request.radius,
         heading_change=request.heading_change,
         length=request.length,
         original_classification=request.original_classification,
         user_classification=request.user_classification,
-        driver_id=request.driver_id
+        driver_id=request.driver_id,
     )
-    db.add(feedback_entry)
-    db.commit()
-    
-    # Re-train model with all feedbacks for this driver
-    feedbacks = db.query(models.PacenoteFeedback).filter_by(driver_id=request.driver_id).all()
-    success = train_model(feedbacks, request.driver_id)
-    
-    return {"message": "Feedback saved", "ml_trained": success, "total_feedbacks": len(feedbacks)}
+    database.add(feedback_entry)
+    database.commit()
+
+    feedbacks = (
+        database.query(models.PacenoteFeedback)
+        .filter_by(driver_id=request.driver_id)
+        .order_by(models.PacenoteFeedback.timestamp.asc())
+        .all()
+    )
+    trained = train_model(feedbacks, request.driver_id)
+    return {
+        "message": "Feedback saved",
+        "ml_trained": trained,
+        "total_feedbacks": len(feedbacks),
+    }
+
 
 @router.post("/speech-to-text")
-async def speech_to_text(audio: UploadFile = File(...)):
-    recognizer = sr.Recognizer()
-    
-    # Save uploaded file temporarily
-    temp_audio_path = f"temp_{audio.filename}"
+async def speech_to_text(audio: Annotated[UploadFile, File(...)]):
+    content = await _read_limited(audio)
+    source_suffix = Path(audio.filename or "audio.m4a").suffix.lower() or ".m4a"
+    source_path = ""
+    wav_path = ""
+
     try:
-        with open(temp_audio_path, "wb") as f:
-            content = await audio.read()
-            f.write(content)
-            
-        with sr.AudioFile(temp_audio_path) as source:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=source_suffix) as source_file:
+            source_file.write(content)
+            source_path = source_file.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav_file:
+            wav_path = wav_file.name
+
+        AudioSegment.from_file(source_path).export(wav_path, format="wav")
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(wav_path) as source:
             audio_data = recognizer.record(source)
-            text = recognizer.recognize_google(audio_data, language="es-ES")
-            return {"text": text}
+        return {"text": recognizer.recognize_google(audio_data, language="es-ES")}
     except sr.UnknownValueError:
         return {"text": "", "error": "No se entendió el audio"}
-    except sr.RequestError as e:
-        return {"text": "", "error": f"Error del servicio: {e}"}
-    except Exception as e:
-        return {"text": "", "error": f"Error procesando audio: {e}"}
+    except sr.RequestError as exc:
+        logger.warning("Speech recognition service failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Speech recognition service failed") from exc
+    except Exception as exc:
+        logger.exception("Audio processing failed")
+        raise HTTPException(
+            status_code=422,
+            detail="Audio could not be decoded. Ensure FFmpeg is installed on the backend.",
+        ) from exc
     finally:
-        if os.path.exists(temp_audio_path):
-            os.remove(temp_audio_path)
+        for temporary_path in (source_path, wav_path):
+            if temporary_path and os.path.exists(temporary_path):
+                os.remove(temporary_path)
