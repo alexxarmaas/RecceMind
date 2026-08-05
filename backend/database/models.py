@@ -1,15 +1,23 @@
-from sqlalchemy import Column, Integer, Float, String, DateTime
-import datetime
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from sqlalchemy import DateTime, Float, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
+
 from .database import Base
+
 
 class PacenoteFeedback(Base):
     __tablename__ = "pacenote_feedback"
 
-    id = Column(Integer, primary_key=True, index=True)
-    radius = Column(Float, index=True)
-    heading_change = Column(Float)
-    length = Column(Float)
-    original_classification = Column(Integer)
-    user_classification = Column(Integer)
-    driver_id = Column(String, default="default", index=True)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    radius: Mapped[float] = mapped_column(Float, index=True)
+    heading_change: Mapped[float] = mapped_column(Float)
+    length: Mapped[float] = mapped_column(Float)
+    original_classification: Mapped[int] = mapped_column(Integer)
+    user_classification: Mapped[int] = mapped_column(Integer)
+    driver_id: Mapped[str] = mapped_column(String(100), default="default", index=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )

@@ -1,27 +1,48 @@
-# OS
+# Operating systems
 .DS_Store
 Thumbs.db
 
-# IDE
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# Environment variables
+# Secrets and local configuration
 .env
-.env.local
 .env.*
+!.env.example
 
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
 venv/
 env/
-.venv/
+build/
+dist/
+*.egg-info/
+*.db
+*.sqlite
+*.sqlite3
+*.joblib
 
-# Node
+# Node / Expo
 node_modules/
+.expo/
+.expo-shared/
+web-build/
+coverage/
+frontend/ios/
+frontend/android/
 
-# Logs
+# Logs and temporary files
 *.log
+*.tmp
+*.temp

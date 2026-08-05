@@ -1,75 +1,98 @@
-from typing import List
-from .geometry_engine import Curve
-from sklearn.ensemble import RandomForestClassifier
+from __future__ import annotations
+
+from collections.abc import Iterable
+from threading import RLock
+
 import numpy as np
+from sklearn.ensemble import RandomForestClassifier
 
-# Global models dictionary
-ml_models = {}
+from .geometry_engine import Curve
 
-DEFAULT_THRESHOLDS = {
-    6: 150,
-    5: 100,
-    4: 60,
-    3: 35,
-    2: 20
+DEFAULT_THRESHOLDS: dict[int, float] = {
+    6: 150.0,
+    5: 100.0,
+    4: 60.0,
+    3: 35.0,
+    2: 20.0,
 }
 
-def classify_curve(radius: float, thresholds: dict = None) -> int:
-    """
-    Classifies a curve based on its radius using a configurable scale (1 to 6).
-    """
-    if thresholds is None:
-        thresholds = DEFAULT_THRESHOLDS
-        
-    if radius > thresholds.get(6, 150):
-        return 6
-    elif radius > thresholds.get(5, 100):
-        return 5
-    elif radius > thresholds.get(4, 60):
-        return 4
-    elif radius > thresholds.get(3, 35):
-        return 3
-    elif radius > thresholds.get(2, 20):
-        return 2
-    else:
-        return 1
+_MIN_TRAINING_SAMPLES = 12
+_ml_models: dict[str, RandomForestClassifier] = {}
+_model_lock = RLock()
 
-def train_model(feedbacks, driver_id="default"):
-    """Trains a Random Forest classifier based on user feedback for a specific driver."""
-    global ml_models
-    if not feedbacks or len(feedbacks) < 5:
-        # Not enough data to train reliably
+
+def normalize_thresholds(thresholds: dict | None) -> dict[int, float]:
+    normalized = DEFAULT_THRESHOLDS.copy()
+    if thresholds:
+        normalized.update({int(level): float(radius) for level, radius in thresholds.items()})
+    return normalized
+
+
+def classify_curve(radius: float, thresholds: dict | None = None) -> int:
+    current = normalize_thresholds(thresholds)
+    if radius > current[6]:
+        return 6
+    if radius > current[5]:
+        return 5
+    if radius > current[4]:
+        return 4
+    if radius > current[3]:
+        return 3
+    if radius > current[2]:
+        return 2
+    return 1
+
+
+def train_model(feedbacks: Iterable, driver_id: str = "default") -> bool:
+    feedback_list = list(feedbacks)
+    labels = {feedback.user_classification for feedback in feedback_list}
+    if len(feedback_list) < _MIN_TRAINING_SAMPLES or len(labels) < 2:
         return False
-        
-    X = []
-    y = []
-    for fb in feedbacks:
-        X.append([fb.radius, abs(fb.heading_change), fb.length])
-        y.append(fb.user_classification)
-        
-    clf = RandomForestClassifier(n_estimators=50, random_state=42)
-    clf.fit(X, y)
-    ml_models[driver_id] = clf
+
+    features = np.array(
+        [
+            [feedback.radius, abs(feedback.heading_change), feedback.length]
+            for feedback in feedback_list
+        ],
+        dtype=float,
+    )
+    targets = np.array([feedback.user_classification for feedback in feedback_list], dtype=int)
+
+    classifier = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=6,
+        min_samples_leaf=2,
+        class_weight="balanced",
+        random_state=42,
+        n_jobs=1,
+    )
+    classifier.fit(features, targets)
+    with _model_lock:
+        _ml_models[driver_id] = classifier
     return True
 
-def classify_curve_ml(curve: Curve, thresholds: dict = None, driver_id="default") -> int:
-    """Classifies using ML if available for the driver, otherwise falls back to static thresholds."""
-    if driver_id in ml_models:
+
+def classify_curve_ml(curve: Curve, thresholds: dict | None = None, driver_id: str = "default") -> int:
+    with _model_lock:
+        classifier = _ml_models.get(driver_id)
+
+    if classifier is not None:
         try:
-            X = np.array([[curve.radius, abs(curve.heading_change), curve.length]])
-            prediction = ml_models[driver_id].predict(X)[0]
-            return int(prediction)
-        except:
+            features = np.array(
+                [[curve.radius, abs(curve.heading_change), curve.length]], dtype=float
+            )
+            return int(classifier.predict(features)[0])
+        except (TypeError, ValueError):
             pass
-            
     return classify_curve(curve.radius, thresholds)
 
-def classify_curves(curves: List[Curve], thresholds: dict = None, driver_id="default") -> List[dict]:
-    """Adds a classification to a list of Curve objects."""
-    classified_curves = []
+
+def classify_curves(
+    curves: list[Curve], thresholds: dict | None = None, driver_id: str = "default"
+) -> list[dict]:
+    result: list[dict] = []
     for curve in curves:
-        curve_dict = curve.to_dict()
-        curve_dict["classification"] = classify_curve_ml(curve, thresholds, driver_id)
-        classified_curves.append(curve_dict)
-    
-    return classified_curves
+        curve_data = curve.to_dict()
+        curve_data["classification"] = classify_curve_ml(curve, thresholds, driver_id)
+        result.append(curve_data)
+    return result

@@ -4,72 +4,80 @@ import { Platform } from 'react-native';
 // Para acceso remoto via túnel Cloudflare
 const API_URL = 'https://telling-elect-hour-mice.trycloudflare.com/api';
 
-export const analyzeRoute = async (origin: string, destination: string, thresholds?: any, driverId?: string) => {
-  try {
-    const payload: any = { origin, destination };
-    if (thresholds) {
-      payload.thresholds = thresholds;
-    }
-    if (driverId) {
-      payload.driver_id = driverId;
-    }
-    const response = await axios.post(`${API_URL}/analyze-route`, payload);
-    return response.data;
-  } catch (error) {
-    console.error('Error analyzing route:', error);
-    throw error;
-  }
+const developmentHost = Platform.select({
+  android: 'http://10.0.2.2:8000',
+  default: 'http://127.0.0.1:8000',
+});
+
+const configuredBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim() || developmentHost;
+const normalizedBaseUrl = configuredBaseUrl.replace(/\/$/, '');
+const apiBaseUrl = normalizedBaseUrl.endsWith('/api')
+  ? normalizedBaseUrl
+  : `${normalizedBaseUrl}/api`;
+
+const api = axios.create({
+  baseURL: apiBaseUrl,
+  timeout: 30_000,
+});
+
+interface DriverOptions {
+  thresholds?: Partial<Thresholds>;
+  driverId?: string;
+}
+
+const driverPayload = ({ thresholds, driverId }: DriverOptions) => ({
+  ...(thresholds ? { thresholds } : {}),
+  ...(driverId ? { driver_id: driverId } : {}),
+});
+
+export const analyzeRoute = async (
+  origin: string,
+  destination: string,
+  thresholds?: Partial<Thresholds>,
+  driverId?: string,
+): Promise<RouteAnalysisResponse> => {
+  const response = await api.post<RouteAnalysisResponse>('/analyze-route', {
+    origin,
+    destination,
+    ...driverPayload({ thresholds, driverId }),
+  });
+  return response.data;
 };
 
-export const processGpx = async (gpxContent: string, thresholds?: any, driverId?: string) => {
-  try {
-    const payload: any = { gpx_content: gpxContent };
-    if (thresholds) {
-      payload.thresholds = thresholds;
-    }
-    if (driverId) {
-      payload.driver_id = driverId;
-    }
-    const response = await axios.post(`${API_URL}/process-gpx`, payload);
-    return response.data;
-  } catch (error) {
-    console.error('Error processing GPX:', error);
-    throw error;
-  }
+export const processGpx = async (
+  gpxContent: string,
+  thresholds?: Partial<Thresholds>,
+  driverId?: string,
+): Promise<RouteAnalysisResponse> => {
+  const response = await api.post<RouteAnalysisResponse>('/process-gpx', {
+    gpx_content: gpxContent,
+    ...driverPayload({ thresholds, driverId }),
+  });
+  return response.data;
 };
 
-export const processPolyline = async (polyline: string, thresholds?: any, driverId?: string) => {
-  try {
-    const payload: any = { polyline };
-    if (thresholds) {
-      payload.thresholds = thresholds;
-    }
-    if (driverId) {
-      payload.driver_id = driverId;
-    }
-    const response = await axios.post(`${API_URL}/process-polyline`, payload);
-    return response.data;
-  } catch (error) {
-    console.error('Error processing polyline:', error);
-    throw error;
-  }
+export const processPolyline = async (
+  encodedPolyline: string,
+  thresholds?: Partial<Thresholds>,
+  driverId?: string,
+): Promise<RouteAnalysisResponse> => {
+  const response = await api.post<RouteAnalysisResponse>('/process-polyline', {
+    polyline: encodedPolyline,
+    ...driverPayload({ thresholds, driverId }),
+  });
+  return response.data;
 };
 
-export const processCoords = async (coordinates: number[][], thresholds?: any, driverId?: string) => {
-  try {
-    const payload: any = { coordinates };
-    if (thresholds) {
-      payload.thresholds = thresholds;
-    }
-    if (driverId) {
-      payload.driver_id = driverId;
-    }
-    const response = await axios.post(`${API_URL}/process-coords`, payload);
-    return response.data;
-  } catch (error) {
-    console.error('Error processing coords:', error);
-    throw error;
-  }
+export const processCoords = async (
+  coordinates: number[][],
+  thresholds?: Partial<Thresholds>,
+  driverId?: string,
+): Promise<RouteAnalysisResponse> => {
+  const response = await api.post<RouteAnalysisResponse>('/process-coords', {
+    coordinates,
+    ...driverPayload({ thresholds, driverId }),
+  });
+  return response.data;
 };
 
 export const submitFeedback = async (
@@ -78,63 +86,42 @@ export const submitFeedback = async (
   length: number,
   originalClassification: number,
   userClassification: number,
-  driverId?: string
-) => {
-  try {
-    const payload = {
-      radius,
-      heading_change: headingChange,
-      length,
-      original_classification: originalClassification,
-      user_classification: userClassification,
-      driver_id: driverId || 'default'
-    };
-    const response = await axios.post(`${API_URL}/feedback`, payload);
-    return response.data;
-  } catch (error) {
-    console.error('Error submitting feedback:', error);
-    throw error;
-  }
+  driverId = 'default',
+): Promise<FeedbackResponse> => {
+  const response = await api.post<FeedbackResponse>('/feedback', {
+    radius,
+    heading_change: headingChange,
+    length,
+    original_classification: originalClassification,
+    user_classification: userClassification,
+    driver_id: driverId,
+  });
+  return response.data;
 };
 
-export const transcribeAudio = async (uri: string) => {
-  try {
-    const formData = new FormData();
-    const filename = uri.split('/').pop() || 'audio.m4a';
-    const match = /\.(\w+)$/.exec(filename);
-    const type = match ? `audio/${match[1]}` : `audio`;
-    
-    // @ts-ignore
-    formData.append('audio', { uri, name: filename, type });
-    
-    const response = await axios.post(`${API_URL}/speech-to-text`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return response.data;
-  } catch (error) {
-    console.error('Error transcribing audio:', error);
-    throw error;
-  }
+export const transcribeAudio = async (uri: string): Promise<SpeechResponse> => {
+  const formData = new FormData();
+  const filename = uri.split('/').pop() || 'audio.m4a';
+  const extension = /\.(\w+)$/.exec(filename)?.[1];
+  const mimeType = extension ? `audio/${extension}` : 'audio/m4a';
+
+  formData.append('audio', { uri, name: filename, type: mimeType } as unknown as Blob);
+  const response = await api.post<SpeechResponse>('/speech-to-text', formData);
+  return response.data;
 };
 
-export const processTelemetry = async (file: File | any, thresholds?: any, driverId?: string) => {
-  try {
-    const formData = new FormData();
-    formData.append('file', file);
-    
-    if (thresholds) {
-      formData.append('thresholds', JSON.stringify(thresholds));
-    }
-    if (driverId) {
-      formData.append('driver_id', driverId);
-    }
-    
-    const response = await axios.post(`${API_URL}/process-telemetry`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return response.data;
-  } catch (error) {
-    console.error('Error processing telemetry:', error);
-    throw error;
-  }
+export const processTelemetry = async (
+  file: File | Blob,
+  thresholds?: Partial<Thresholds>,
+  driverId?: string,
+): Promise<RouteAnalysisResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (thresholds) formData.append('thresholds', JSON.stringify(thresholds));
+  if (driverId) formData.append('driver_id', driverId);
+
+  const response = await api.post<RouteAnalysisResponse>('/process-telemetry', formData);
+  return response.data;
 };
+
+export { apiBaseUrl };

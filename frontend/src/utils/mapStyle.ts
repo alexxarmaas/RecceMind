@@ -1,4 +1,4 @@
-export const darkMapStyle = [
+const mapStyles = [
   {
     "elementType": "geometry",
     "stylers": [
@@ -184,3 +184,5 @@ export const darkMapStyle = [
     ]
   }
 ];
+
+export const darkMapStyle = Object.assign(mapStyles, { routeColor: '#d60000' });
