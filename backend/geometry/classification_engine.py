@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from threading import RLock
-from typing import Iterable
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
