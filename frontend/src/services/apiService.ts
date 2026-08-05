@@ -1,8 +1,8 @@
 import axios from 'axios';
 import { Platform } from 'react-native';
 
-// Utilizamos 127.0.0.1 para Web y la IP de la red local (192.168.1.38) para móviles
-const API_URL = Platform.OS === 'web' ? 'http://127.0.0.1:8000/api' : 'http://192.168.1.38:8000/api'; 
+// Para acceso remoto via túnel Cloudflare
+const API_URL = 'https://telling-elect-hour-mice.trycloudflare.com/api';
 
 export const analyzeRoute = async (origin: string, destination: string, thresholds?: any, driverId?: string) => {
   try {
