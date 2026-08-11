@@ -1,8 +1,11 @@
 import axios from 'axios';
 import { Platform } from 'react-native';
-
-// Para acceso remoto via túnel Cloudflare
-const API_URL = 'https://telling-elect-hour-mice.trycloudflare.com/api';
+import type {
+  FeedbackResponse,
+  RouteAnalysisResponse,
+  SpeechResponse,
+  Thresholds,
+} from '../types/api';
 
 const developmentHost = Platform.select({
   android: 'http://10.0.2.2:8000',

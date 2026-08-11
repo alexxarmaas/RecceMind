@@ -19,6 +19,7 @@ El proyecto se encuentra en fase MVP. La base funcional incluye:
 - Editor de pacenotes y feedback por piloto.
 - Exportación PDF/CSV y reproducción por voz.
 - Grabación GPS desde la aplicación.
+- Backend preparado para despliegue en contenedor y consumo desde la consola administrativa de Tramassso.
 
 Las funciones de aprendizaje, rasantes, telemetría y velocidad teórica deben considerarse experimentales hasta disponer de un conjunto de validación con tramos reales etiquetados.
 
@@ -36,6 +37,12 @@ backend (FastAPI)
         +-- Generador de pacenotes
         +-- SQLite / SQLAlchemy
         +-- Clasificador personalizado
+
+tramassso.com/reccemind (Next.js, admin)
+        |
+        | proxy server-side + service token
+        v
+backend (FastAPI)
 ```
 
 ## Requisitos
@@ -83,6 +90,35 @@ Para un teléfono físico, `EXPO_PUBLIC_API_URL` debe apuntar a una dirección a
 EXPO_PUBLIC_API_URL=http://192.168.1.50:8000/api
 ```
 
+## Despliegue cloud del backend
+
+`backend/Dockerfile` incluye Python 3.13, las dependencias del proyecto y FFmpeg. Puede utilizarse en Railway, Render, Fly.io, un VPS o cualquier plataforma capaz de ejecutar contenedores.
+
+Ejemplo local:
+
+```bash
+cd backend
+docker build -t reccemind-api .
+docker run --rm -p 8000:8000 --env-file .env reccemind-api
+```
+
+Para un despliegue persistente usa preferiblemente PostgreSQL y migraciones Alembic:
+
+```env
+GOOGLE_MAPS_API_KEY=...
+DATABASE_URL=postgresql://...
+AUTO_CREATE_DB=false
+RECCEMIND_SERVICE_TOKEN=un-secreto-largo-y-aleatorio
+```
+
+Cuando `RECCEMIND_SERVICE_TOKEN` tiene valor, todas las rutas bajo `/api/*` exigen la cabecera:
+
+```text
+X-RecceMind-Token: <secreto>
+```
+
+En desarrollo local puedes dejar la variable vacía. El token está pensado para comunicación servidor-a-servidor, por ejemplo desde el proxy de `tramassso.com/reccemind`; no debe compilarse dentro de Expo ni enviarse al navegador.
+
 ## Seguridad de las claves
 
 La clave utilizada por el backend no debe enviarse al cliente. La clave del frontend será visible en la aplicación compilada, por lo que debe ser una clave independiente y estar restringida por:
@@ -128,6 +164,7 @@ GitHub Actions ejecuta las validaciones del backend y del frontend en cada pull 
 4. Separar `MapScreen` en componentes y hooks especializados.
 5. Persistir y versionar modelos personalizados por piloto.
 6. Añadir autenticación antes de almacenar perfiles o datos de usuarios reales.
+7. Evolucionar las pacenotes a un contrato estructurado y añadir modo reconocimiento/copiloto offline.
 
 ## Licencia
 

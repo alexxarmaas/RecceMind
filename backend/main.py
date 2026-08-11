@@ -40,7 +40,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="RecceMind API",
     description="Motor geométrico para generar borradores de notas de rally",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -50,7 +50,7 @@ app.add_middleware(
     allow_origins=origins,
     allow_credentials="*" not in origins,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-RecceMind-Token"],
 )
 app.include_router(router)
 
@@ -61,4 +61,5 @@ def root():
         "message": "RecceMind API is running",
         "health": "/api/health",
         "docs": "/docs",
+        "service_auth": "enabled" if settings.service_token else "disabled",
     }

@@ -5,12 +5,13 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from secrets import compare_digest
 from typing import Annotated
 
 import polyline
 import speech_recognition as sr
 from defusedxml import ElementTree as ET
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
 from pydantic import TypeAdapter, ValidationError
 from pydub import AudioSegment
 from sqlalchemy.orm import Session
@@ -31,8 +32,27 @@ from geometry.classification_engine import train_model
 from services import MapsService, MapsServiceError
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api", tags=["geometry"])
 _threshold_adapter = TypeAdapter(dict[int, float])
+
+
+def require_service_token(
+    x_reccemind_token: Annotated[str | None, Header(alias="X-RecceMind-Token")] = None,
+) -> None:
+    expected_token = settings.service_token
+    if not expected_token:
+        return
+    if not x_reccemind_token or not compare_digest(x_reccemind_token, expected_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid RecceMind service token",
+        )
+
+
+router = APIRouter(
+    prefix="/api",
+    tags=["geometry"],
+    dependencies=[Depends(require_service_token)],
+)
 
 
 def get_db():
