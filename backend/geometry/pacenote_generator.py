@@ -14,6 +14,18 @@ def _curve_structure(curve: dict) -> dict[str, Any]:
     if "abre" in modifier_text:
         modifiers.append("opens")
 
+    entry_classification = int(curve.get("entry_classification", classification))
+    exit_classification = int(curve.get("exit_classification", classification))
+    severity = classification
+    target_severity: int | None = None
+
+    if "tightens" in modifiers and exit_classification < entry_classification:
+        severity = entry_classification
+        target_severity = exit_classification
+    elif "opens" in modifiers and exit_classification > entry_classification:
+        severity = entry_classification
+        target_severity = exit_classification
+
     warnings: list[str] = []
     max_braking = curve.get("max_braking")
     if max_braking is not None and float(max_braking) > 0.5:
@@ -26,11 +38,13 @@ def _curve_structure(curve: dict) -> dict[str, Any]:
     structured: dict[str, Any] = {
         "kind": "curve",
         "direction": direction,
-        "severity": classification,
+        "severity": severity,
         "length": "long" if float(curve["length"]) > 40 else "standard",
         "modifiers": modifiers,
         "warnings": warnings,
     }
+    if target_severity is not None:
+        structured["target_severity"] = target_severity
 
     min_gear = curve.get("min_gear")
     if min_gear is not None:
@@ -79,11 +93,16 @@ def render_pacenote(structured: dict[str, Any]) -> str:
     if structured.get("length") == "long":
         body += " larga"
 
+    target_severity = structured.get("target_severity")
     modifiers = set(structured.get("modifiers") or [])
     if "tightens" in modifiers:
         body += " se cierra"
+        if target_severity is not None:
+            body += f" a {int(target_severity)}"
     if "opens" in modifiers:
         body += " se abre"
+        if target_severity is not None:
+            body += f" a {int(target_severity)}"
 
     gear = structured.get("gear")
     if gear is not None:

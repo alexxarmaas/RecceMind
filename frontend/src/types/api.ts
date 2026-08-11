@@ -1,5 +1,6 @@
 export type PacenoteModifier = 'tightens' | 'opens';
 export type PacenoteWarning = 'caution' | 'brake';
+export type PacenoteSeverity = 1 | 2 | 3 | 4 | 5 | 6;
 
 export type StructuredPacenote =
   | {
@@ -9,7 +10,8 @@ export type StructuredPacenote =
   | {
       kind: 'curve';
       direction: 'left' | 'right';
-      severity: 1 | 2 | 3 | 4 | 5 | 6;
+      severity: PacenoteSeverity;
+      target_severity?: PacenoteSeverity;
       length: 'standard' | 'long';
       modifiers: PacenoteModifier[];
       warnings: PacenoteWarning[];
@@ -38,10 +40,14 @@ export interface CurveData {
   end_distance: number;
   length: number;
   radius: number;
+  entry_radius?: number;
+  exit_radius?: number;
   heading_change: number;
   direction: 'Derecha' | 'Izquierda';
   modifier: string;
-  classification: number;
+  classification: PacenoteSeverity;
+  entry_classification?: PacenoteSeverity;
+  exit_classification?: PacenoteSeverity;
   max_speed?: number;
   min_gear?: number;
   max_braking?: number;

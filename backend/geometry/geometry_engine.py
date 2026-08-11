@@ -24,6 +24,8 @@ class Curve:
     heading_change: float
     direction: str
     modifier: str = ""
+    entry_radius: float | None = None
+    exit_radius: float | None = None
     max_speed: float | None = None
     min_gear: int | None = None
     max_braking: float | None = None
@@ -40,6 +42,10 @@ class Curve:
             "direction": self.direction,
             "modifier": self.modifier,
         }
+        if self.entry_radius is not None:
+            data["entry_radius"] = round(self.entry_radius, 2)
+        if self.exit_radius is not None:
+            data["exit_radius"] = round(self.exit_radius, 2)
         if self.max_speed is not None:
             data["max_speed"] = round(self.max_speed, 2)
         if self.min_gear is not None:
@@ -184,13 +190,7 @@ def resample_points(
     points: list[tuple[float, float]],
     spacing_m: float = 2.0,
 ) -> list[tuple[float, float]]:
-    """Return a smooth path sampled at approximately fixed metric intervals.
-
-    Interpolating in local metric coordinates makes curve detection less dependent on
-    the arbitrary point density supplied by Google Routes, GPX files or GPS traces.
-    Cubic interpolation is used for paths with enough control points; very short paths
-    fall back to linear interpolation.
-    """
+    """Return a smooth path sampled at approximately fixed metric intervals."""
     if spacing_m <= 0:
         raise ValueError("spacing_m must be positive")
 
@@ -268,18 +268,36 @@ def _signed_heading_change(
     )
 
 
-def _curve_modifier(radii: list[float]) -> str:
-    finite = [radius for radius in radii if np.isfinite(radius)]
+def summarize_radius_profile(
+    radii: list[float],
+    *,
+    transition_ratio: float = 1.35,
+) -> tuple[float | None, float | None, str]:
+    """Summarize how curve radius evolves from entry to exit.
+
+    Medians over the first and last thirds make the transition estimate resistant to
+    one noisy curvature sample. A modifier is emitted only when the radius changes by
+    at least ``transition_ratio`` in a consistent direction.
+    """
+    finite = [float(radius) for radius in radii if np.isfinite(radius) and radius > 0]
+    if not finite:
+        return None, None, ""
+
     if len(finite) < 4:
-        return ""
-    midpoint = len(finite) // 2
-    start_radius = float(np.median(finite[:midpoint]))
-    end_radius = float(np.median(finite[midpoint:]))
-    if start_radius > 1.3 * end_radius:
-        return " se cierra"
-    if end_radius > 1.3 * start_radius:
-        return " se abre"
-    return ""
+        representative = float(np.median(finite))
+        return representative, representative, ""
+
+    phase_size = max(2, len(finite) // 3)
+    entry_radius = float(np.median(finite[:phase_size]))
+    exit_radius = float(np.median(finite[-phase_size:]))
+
+    if entry_radius > transition_ratio * exit_radius:
+        modifier = " se cierra"
+    elif exit_radius > transition_ratio * entry_radius:
+        modifier = " se abre"
+    else:
+        modifier = ""
+    return entry_radius, exit_radius, modifier
 
 
 def analyze_polyline(
@@ -377,6 +395,7 @@ def analyze_polyline(
             if finite_radii
             else max_curve_radius
         )
+        entry_radius, exit_radius, modifier = summarize_radius_profile(curve["radii"])
         max_speed = None
         min_gear = None
         max_braking = None
@@ -408,7 +427,9 @@ def analyze_polyline(
                 radius=representative_radius,
                 heading_change=float(curve["heading_change"]),
                 direction=str(curve["direction"]),
-                modifier=_curve_modifier(curve["radii"]),
+                modifier=modifier,
+                entry_radius=entry_radius,
+                exit_radius=exit_radius,
                 max_speed=max_speed,
                 min_gear=min_gear,
                 max_braking=max_braking,
