@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import polyline
+from scipy.interpolate import CubicSpline
 
 EARTH_RADIUS_M = 6_371_000.0
 
@@ -89,20 +90,46 @@ def _to_local_xy(points: list[tuple[float, float]]) -> np.ndarray:
     return np.asarray(coordinates, dtype=float)
 
 
-def calculate_curvature(p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]) -> float:
+def _from_local_xy(
+    coordinates: np.ndarray,
+    origin: tuple[float, float],
+) -> list[tuple[float, float]]:
+    origin_lat = np.radians(origin[0])
+    origin_lon = np.radians(origin[1])
+    points: list[tuple[float, float]] = []
+    for x, y in coordinates:
+        latitude_r = origin_lat + float(y) / EARTH_RADIUS_M
+        longitude_r = origin_lon + float(x) / (EARTH_RADIUS_M * np.cos(origin_lat))
+        points.append((float(np.degrees(latitude_r)), float(np.degrees(longitude_r))))
+    return points
+
+
+def calculate_curvature(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+) -> float:
     xy = _to_local_xy([p1, p2, p3])
     side_a = float(np.linalg.norm(xy[1] - xy[2]))
     side_b = float(np.linalg.norm(xy[0] - xy[2]))
     side_c = float(np.linalg.norm(xy[0] - xy[1]))
     semiperimeter = (side_a + side_b + side_c) / 2
-    area_sq = semiperimeter * (semiperimeter - side_a) * (semiperimeter - side_b) * (semiperimeter - side_c)
+    area_sq = (
+        semiperimeter
+        * (semiperimeter - side_a)
+        * (semiperimeter - side_b)
+        * (semiperimeter - side_c)
+    )
     if area_sq <= 1e-8:
         return float("inf")
     area = sqrt(area_sq)
     return (side_a * side_b * side_c) / (4 * area)
 
 
-def smooth_points(points: list[tuple[float, float]], window: int = 5) -> list[tuple[float, float]]:
+def smooth_points(
+    points: list[tuple[float, float]],
+    window: int = 5,
+) -> list[tuple[float, float]]:
     if len(points) < 3 or window <= 1:
         return points
     window = max(3, window if window % 2 else window + 1)
@@ -129,8 +156,116 @@ def smooth_points(points: list[tuple[float, float]], window: int = 5) -> list[tu
 def _cumulative_distances(points: list[tuple[float, float]]) -> list[float]:
     distances = [0.0]
     for first, second in zip(points, points[1:]):
-        distances.append(distances[-1] + haversine_distance(first[0], first[1], second[0], second[1]))
+        distances.append(
+            distances[-1]
+            + haversine_distance(first[0], first[1], second[0], second[1])
+        )
     return distances
+
+
+def _deduplicate_points(
+    points: list[tuple[float, float]],
+    minimum_distance_m: float = 0.05,
+) -> list[tuple[float, float]]:
+    if not points:
+        return []
+    deduplicated = [points[0]]
+    for point in points[1:]:
+        previous = deduplicated[-1]
+        if (
+            haversine_distance(previous[0], previous[1], point[0], point[1])
+            > minimum_distance_m
+        ):
+            deduplicated.append(point)
+    return deduplicated
+
+
+def resample_points(
+    points: list[tuple[float, float]],
+    spacing_m: float = 2.0,
+) -> list[tuple[float, float]]:
+    """Return a smooth path sampled at approximately fixed metric intervals.
+
+    Interpolating in local metric coordinates makes curve detection less dependent on
+    the arbitrary point density supplied by Google Routes, GPX files or GPS traces.
+    Cubic interpolation is used for paths with enough control points; very short paths
+    fall back to linear interpolation.
+    """
+    if spacing_m <= 0:
+        raise ValueError("spacing_m must be positive")
+
+    clean_points = _deduplicate_points(points)
+    if len(clean_points) < 2:
+        return clean_points
+
+    local_xy = _to_local_xy(clean_points)
+    source_distances = [0.0]
+    for first, second in zip(local_xy, local_xy[1:]):
+        source_distances.append(
+            source_distances[-1] + float(np.linalg.norm(second - first))
+        )
+
+    total_distance = source_distances[-1]
+    if total_distance <= spacing_m:
+        return [clean_points[0], clean_points[-1]]
+
+    targets = np.arange(0.0, total_distance, spacing_m, dtype=float)
+    if targets.size == 0 or total_distance - float(targets[-1]) > 1e-6:
+        targets = np.append(targets, total_distance)
+
+    source = np.asarray(source_distances, dtype=float)
+    if len(clean_points) >= 4:
+        x_spline = CubicSpline(source, local_xy[:, 0], bc_type="natural")
+        y_spline = CubicSpline(source, local_xy[:, 1], bc_type="natural")
+        sampled_xy = np.column_stack((x_spline(targets), y_spline(targets)))
+    else:
+        sampled_xy = np.column_stack(
+            (
+                np.interp(targets, source, local_xy[:, 0]),
+                np.interp(targets, source, local_xy[:, 1]),
+            )
+        )
+
+    sampled = _from_local_xy(sampled_xy, clean_points[0])
+    sampled[0] = clean_points[0]
+    sampled[-1] = clean_points[-1]
+    return sampled
+
+
+def _nearest_distance_index(distances: list[float], target: float) -> int:
+    if not distances:
+        return 0
+    position = int(np.searchsorted(distances, target, side="left"))
+    if position <= 0:
+        return 0
+    if position >= len(distances):
+        return len(distances) - 1
+    before = position - 1
+    return (
+        before
+        if abs(distances[before] - target) <= abs(distances[position] - target)
+        else position
+    )
+
+
+def _signed_heading_change(
+    points: list[tuple[float, float]],
+    start_idx: int,
+    end_idx: int,
+) -> float:
+    if end_idx - start_idx < 2:
+        return 0.0
+
+    bearings = [
+        initial_bearing(*points[index], *points[index + 1])
+        for index in range(start_idx, end_idx)
+    ]
+    return float(
+        sum(
+            normalize_heading_change(second - first)
+            for first, second in zip(bearings, bearings[1:])
+        )
+    )
 
 
 def _curve_modifier(radii: list[float]) -> str:
@@ -154,14 +289,23 @@ def analyze_polyline(
     max_curve_radius: float = 250.0,
     min_heading_change: float = 4.0,
     min_curve_length: float = 10.0,
-    analysis_window: int = 2,
-    gap_tolerance: int = 1,
+    resample_spacing_m: float = 2.0,
+    analysis_window_m: float = 8.0,
+    gap_tolerance_m: float = 6.0,
 ) -> list[Curve]:
     raw_points = polyline.decode(encoded_polyline)
-    if len(raw_points) < 2 * analysis_window + 1:
+    if len(raw_points) < 3:
         return []
 
-    points = smooth_points(raw_points, window=5)
+    raw_distances = _cumulative_distances(raw_points)
+    sampled_points = resample_points(raw_points, spacing_m=resample_spacing_m)
+    points = smooth_points(sampled_points, window=5)
+
+    analysis_window = max(2, int(round(analysis_window_m / resample_spacing_m)))
+    if len(points) < 2 * analysis_window + 1:
+        return []
+
+    gap_tolerance = max(1, int(round(gap_tolerance_m / resample_spacing_m)))
     distances = _cumulative_distances(points)
     current: dict[str, Any] | None = None
     curves: list[dict[str, Any]] = []
@@ -171,8 +315,18 @@ def analyze_polyline(
         nonlocal current, gap_count
         if current is None:
             return
-        length = current["end_distance"] - current["start_distance"]
-        if length >= min_curve_length and abs(current["heading_change"]) >= min_heading_change * 1.5:
+
+        start_idx = int(current["start_idx"])
+        end_idx = int(current["end_idx"])
+        length = distances[end_idx] - distances[start_idx]
+        heading_change = _signed_heading_change(points, start_idx, end_idx)
+        if (
+            length >= min_curve_length
+            and abs(heading_change) >= min_heading_change * 1.5
+        ):
+            current["start_distance"] = distances[start_idx]
+            current["end_distance"] = distances[end_idx]
+            current["heading_change"] = heading_change
             curves.append(current)
         current = None
         gap_count = 0
@@ -182,9 +336,13 @@ def analyze_polyline(
         right = index + analysis_window
         incoming = initial_bearing(*points[left], *points[index])
         outgoing = initial_bearing(*points[index], *points[right])
-        heading_change = normalize_heading_change(outgoing - incoming)
+        local_heading_change = normalize_heading_change(outgoing - incoming)
         radius = calculate_curvature(points[left], points[index], points[right])
-        candidate = np.isfinite(radius) and radius <= max_curve_radius and abs(heading_change) >= min_heading_change
+        candidate = (
+            np.isfinite(radius)
+            and radius <= max_curve_radius
+            and abs(local_heading_change) >= min_heading_change
+        )
 
         if not candidate:
             if current is not None:
@@ -193,22 +351,17 @@ def analyze_polyline(
                     close_current()
             continue
 
-        direction = "Derecha" if heading_change > 0 else "Izquierda"
+        direction = "Derecha" if local_heading_change > 0 else "Izquierda"
         if current is None or current["direction"] != direction:
             close_current()
             current = {
                 "start_idx": left,
                 "end_idx": right,
-                "start_distance": distances[left],
-                "end_distance": distances[right],
-                "heading_change": heading_change,
                 "direction": direction,
                 "radii": [radius],
             }
         else:
             current["end_idx"] = right
-            current["end_distance"] = distances[right]
-            current["heading_change"] += heading_change
             current["radii"].append(radius)
         gap_count = 0
 
@@ -216,32 +369,44 @@ def analyze_polyline(
 
     curve_objects: list[Curve] = []
     for curve in curves:
-        start_idx = int(curve["start_idx"])
-        end_idx = int(curve["end_idx"])
+        start_distance = float(curve["start_distance"])
+        end_distance = float(curve["end_distance"])
+        source_start_idx = _nearest_distance_index(raw_distances, start_distance)
+        source_end_idx = _nearest_distance_index(raw_distances, end_distance)
         finite_radii = [radius for radius in curve["radii"] if np.isfinite(radius)]
-        representative_radius = float(np.percentile(finite_radii, 30)) if finite_radii else max_curve_radius
+        representative_radius = (
+            float(np.percentile(finite_radii, 30))
+            if finite_radii
+            else max_curve_radius
+        )
         max_speed = None
         min_gear = None
         max_braking = None
 
         if telemetry:
-            start_telemetry = max(0, start_idx - 5)
-            end_telemetry = min(len(telemetry), end_idx + 1)
+            start_telemetry = max(0, source_start_idx - 5)
+            end_telemetry = min(len(telemetry), source_end_idx + 1)
             sample = telemetry[start_telemetry:end_telemetry]
-            speeds = [item.get("speed") for item in sample if item.get("speed") is not None]
-            gears = [item.get("gear") for item in sample if item.get("gear") is not None]
-            brakes = [item.get("brake") for item in sample if item.get("brake") is not None]
+            speeds = [
+                item.get("speed") for item in sample if item.get("speed") is not None
+            ]
+            gears = [
+                item.get("gear") for item in sample if item.get("gear") is not None
+            ]
+            brakes = [
+                item.get("brake") for item in sample if item.get("brake") is not None
+            ]
             max_speed = max(speeds) if speeds else None
             min_gear = min(gears) if gears else None
             max_braking = max(brakes) if brakes else None
 
         curve_objects.append(
             Curve(
-                start_idx=start_idx,
-                end_idx=end_idx,
-                start_distance=float(curve["start_distance"]),
-                end_distance=float(curve["end_distance"]),
-                length=float(curve["end_distance"] - curve["start_distance"]),
+                start_idx=source_start_idx,
+                end_idx=source_end_idx,
+                start_distance=start_distance,
+                end_distance=end_distance,
+                length=end_distance - start_distance,
                 radius=representative_radius,
                 heading_change=float(curve["heading_change"]),
                 direction=str(curve["direction"]),
@@ -284,7 +449,10 @@ def parse_telemetry_csv(content: str) -> tuple[list[tuple[float, float]], list[d
     return points, telemetry
 
 
-def extract_crests(points: list[tuple[float, float]], elevations: list[float]) -> list[dict]:
+def extract_crests(
+    points: list[tuple[float, float]],
+    elevations: list[float],
+) -> list[dict]:
     if len(points) < 11 or len(elevations) != len(points):
         return []
     distances = _cumulative_distances(points)
@@ -295,7 +463,10 @@ def extract_crests(points: list[tuple[float, float]], elevations: list[float]) -
             continue
         left_min = min(elevations[index - 5 : index])
         right_min = min(elevations[index + 1 : index + 6])
-        prominence = min(elevations[index] - left_min, elevations[index] - right_min)
+        prominence = min(
+            elevations[index] - left_min,
+            elevations[index] - right_min,
+        )
         if prominence >= 2.0:
             crests.append(
                 {
@@ -331,18 +502,29 @@ def calculate_speed_profile(
     distances = _cumulative_distances(points)
     speeds = [max_speed_mps] * len(points)
     for index in range(1, len(points) - 1):
-        radius = calculate_curvature(points[index - 1], points[index], points[index + 1])
+        radius = calculate_curvature(
+            points[index - 1],
+            points[index],
+            points[index + 1],
+        )
         if np.isfinite(radius):
-            speeds[index] = min(max_speed_mps, sqrt(max(0.0, lateral_acceleration_mps2 * radius)))
+            speeds[index] = min(
+                max_speed_mps,
+                sqrt(max(0.0, lateral_acceleration_mps2 * radius)),
+            )
 
     for index in range(len(points) - 2, -1, -1):
         segment = max(0.01, distances[index + 1] - distances[index])
-        braking_limit = sqrt(max(0.0, speeds[index + 1] ** 2 + 2 * braking_mps2 * segment))
+        braking_limit = sqrt(
+            max(0.0, speeds[index + 1] ** 2 + 2 * braking_mps2 * segment)
+        )
         speeds[index] = min(speeds[index], braking_limit)
 
     for index in range(1, len(points)):
         segment = max(0.01, distances[index] - distances[index - 1])
-        acceleration_limit = sqrt(max(0.0, speeds[index - 1] ** 2 + 2 * acceleration_mps2 * segment))
+        acceleration_limit = sqrt(
+            max(0.0, speeds[index - 1] ** 2 + 2 * acceleration_mps2 * segment)
+        )
         speeds[index] = min(speeds[index], acceleration_limit)
 
     return [round(speed, 3) for speed in speeds]
