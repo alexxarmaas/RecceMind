@@ -1,8 +1,34 @@
+export type PacenoteModifier = 'tightens' | 'opens';
+export type PacenoteWarning = 'caution' | 'brake';
+
+export type StructuredPacenote =
+  | {
+      kind: 'distance';
+      meters: number;
+    }
+  | {
+      kind: 'curve';
+      direction: 'left' | 'right';
+      severity: 1 | 2 | 3 | 4 | 5 | 6;
+      length: 'standard' | 'long';
+      modifiers: PacenoteModifier[];
+      warnings: PacenoteWarning[];
+      gear?: number;
+    }
+  | {
+      kind: 'crest' | 'jump';
+    }
+  | {
+      kind: 'custom';
+      label: string;
+    };
+
 export interface PacenoteItem {
   type: 'distance' | 'note';
   text: string;
   curve_index: number | null;
   distance?: number;
+  structured: StructuredPacenote;
 }
 
 export interface CurveData {
