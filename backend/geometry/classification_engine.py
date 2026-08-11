@@ -56,7 +56,10 @@ def train_model(feedbacks: Iterable, driver_id: str = "default") -> bool:
         ],
         dtype=float,
     )
-    targets = np.array([feedback.user_classification for feedback in feedback_list], dtype=int)
+    targets = np.array(
+        [feedback.user_classification for feedback in feedback_list],
+        dtype=int,
+    )
 
     classifier = RandomForestClassifier(
         n_estimators=100,
@@ -72,14 +75,19 @@ def train_model(feedbacks: Iterable, driver_id: str = "default") -> bool:
     return True
 
 
-def classify_curve_ml(curve: Curve, thresholds: dict | None = None, driver_id: str = "default") -> int:
+def classify_curve_ml(
+    curve: Curve,
+    thresholds: dict | None = None,
+    driver_id: str = "default",
+) -> int:
     with _model_lock:
         classifier = _ml_models.get(driver_id)
 
     if classifier is not None:
         try:
             features = np.array(
-                [[curve.radius, abs(curve.heading_change), curve.length]], dtype=float
+                [[curve.radius, abs(curve.heading_change), curve.length]],
+                dtype=float,
             )
             return int(classifier.predict(features)[0])
         except (TypeError, ValueError):
@@ -88,11 +96,24 @@ def classify_curve_ml(curve: Curve, thresholds: dict | None = None, driver_id: s
 
 
 def classify_curves(
-    curves: list[Curve], thresholds: dict | None = None, driver_id: str = "default"
+    curves: list[Curve],
+    thresholds: dict | None = None,
+    driver_id: str = "default",
 ) -> list[dict]:
     result: list[dict] = []
     for curve in curves:
+        classification = classify_curve_ml(curve, thresholds, driver_id)
         curve_data = curve.to_dict()
-        curve_data["classification"] = classify_curve_ml(curve, thresholds, driver_id)
+        curve_data["classification"] = classification
+        curve_data["entry_classification"] = (
+            classify_curve(curve.entry_radius, thresholds)
+            if curve.entry_radius is not None
+            else classification
+        )
+        curve_data["exit_classification"] = (
+            classify_curve(curve.exit_radius, thresholds)
+            if curve.exit_radius is not None
+            else classification
+        )
         result.append(curve_data)
     return result
