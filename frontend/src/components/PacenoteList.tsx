@@ -2,12 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { FontAwesome5 } from '@expo/vector-icons';
-
-export interface PacenoteItem {
-  type: 'distance' | 'note';
-  text: string;
-  curve_index: number | null;
-}
+import type { PacenoteItem } from '../types/api';
 
 interface PacenoteListProps {
   notes: PacenoteItem[];
@@ -31,6 +26,7 @@ const PacenoteList: React.FC<PacenoteListProps> = ({ notes, onNotePress, selecte
     }
     setEditingIndex(null);
   };
+
   if (!notes || notes.length === 0) {
     return (
       <View style={styles.emptyContainer}>
@@ -42,7 +38,7 @@ const PacenoteList: React.FC<PacenoteListProps> = ({ notes, onNotePress, selecte
   return (
     <BlurView intensity={80} tint="dark" style={styles.container}>
       <Text style={styles.title}>
-         <FontAwesome5 name="clipboard-list" size={18} color="#fff" /> Notas de Ruta (Pacenotes)
+        <FontAwesome5 name="clipboard-list" size={18} color="#fff" /> Notas de Ruta (Pacenotes)
       </Text>
       <FlatList
         data={notes}
@@ -50,7 +46,7 @@ const PacenoteList: React.FC<PacenoteListProps> = ({ notes, onNotePress, selecte
         renderItem={({ item, index }) => {
           const isSelected = item.curve_index !== null && item.curve_index === selectedCurveIndex;
           const isEditing = editingIndex === index;
-          
+
           if (isEditing) {
             return (
               <View style={[styles.noteItem, styles.editingContainer]}>
@@ -73,32 +69,34 @@ const PacenoteList: React.FC<PacenoteListProps> = ({ notes, onNotePress, selecte
           }
 
           return (
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[
-                styles.noteItem, 
+                styles.noteItem,
                 item.type === 'distance' ? styles.distanceItem : styles.curveItem,
-                isSelected && styles.selectedItem
+                isSelected && styles.selectedItem,
               ]}
               disabled={item.curve_index === null}
               onPress={() => item.curve_index !== null && onNotePress && onNotePress(item.curve_index)}
             >
               <View style={styles.noteContent}>
-                <Text style={[
-                  styles.noteText,
-                  item.type === 'distance' && styles.distanceText,
-                  isSelected && styles.selectedText,
-                  item.text.includes('Derecha') && !isSelected && styles.rightText,
-                  item.text.includes('Izquierda') && !isSelected && styles.leftText,
-                ]}>
+                <Text
+                  style={[
+                    styles.noteText,
+                    item.type === 'distance' && styles.distanceText,
+                    isSelected && styles.selectedText,
+                    item.text.includes('Derecha') && !isSelected && styles.rightText,
+                    item.text.includes('Izquierda') && !isSelected && styles.leftText,
+                  ]}
+                >
                   {item.type === 'distance' ? `${item.text}m` : item.text}
                 </Text>
-                
+
                 {item.type === 'note' && (
-                  <TouchableOpacity 
-                    style={styles.editIconBtn} 
+                  <TouchableOpacity
+                    style={styles.editIconBtn}
                     onPress={() => handleEditStart(index, item.text)}
                   >
-                    <FontAwesome5 name="pen" size={12} color={isSelected ? "#fff" : "#888"} />
+                    <FontAwesome5 name="pen" size={12} color={isSelected ? '#fff' : '#888'} />
                   </TouchableOpacity>
                 )}
               </View>
@@ -118,7 +116,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.15)',
-    backgroundColor: 'rgba(20,20,20,0.4)', // Base glass effect
+    backgroundColor: 'rgba(20,20,20,0.4)',
   },
   title: {
     fontSize: 18,
@@ -164,10 +162,10 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   rightText: {
-    color: '#ff4444', // Neon Red for right
+    color: '#ff4444',
   },
   leftText: {
-    color: '#33b5e5', // Neon Blue for left
+    color: '#33b5e5',
   },
   distanceText: {
     fontSize: 14,
@@ -228,7 +226,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#d60000',
     padding: 10,
     borderRadius: 8,
-  }
+  },
 });
 
 export default PacenoteList;
