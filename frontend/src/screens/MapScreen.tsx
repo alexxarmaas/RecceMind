@@ -850,10 +850,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#121212',
   },
   mapContainer: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
   },
   map: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
   },
   topOverlay: {
     position: 'absolute',
@@ -1048,5 +1056,3 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   }
 });
-
-export default MapScreen;
