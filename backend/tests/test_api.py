@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from config import settings
 from main import app
 
 
@@ -8,6 +9,24 @@ def test_health_endpoint():
         response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_service_token_protects_api_when_configured():
+    original_token = settings.service_token
+    object.__setattr__(settings, "service_token", "test-service-token")
+    try:
+        with TestClient(app) as client:
+            unauthorized = client.get("/api/health")
+            authorized = client.get(
+                "/api/health",
+                headers={"X-RecceMind-Token": "test-service-token"},
+            )
+    finally:
+        object.__setattr__(settings, "service_token", original_token)
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200
+    assert authorized.json() == {"status": "ok"}
 
 
 def test_thresholds_are_coerced_from_json_keys():
