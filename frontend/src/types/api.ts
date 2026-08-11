@@ -28,7 +28,7 @@ export interface PacenoteItem {
   text: string;
   curve_index: number | null;
   distance?: number;
-  structured: StructuredPacenote;
+  structured?: StructuredPacenote;
 }
 
 export interface CurveData {
