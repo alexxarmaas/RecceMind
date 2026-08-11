@@ -84,8 +84,8 @@ const PacenoteList: React.FC<PacenoteListProps> = ({ notes, onNotePress, selecte
                     styles.noteText,
                     item.type === 'distance' && styles.distanceText,
                     isSelected && styles.selectedText,
-                    item.structured.kind === 'curve' && item.structured.direction === 'right' && !isSelected && styles.rightText,
-                    item.structured.kind === 'curve' && item.structured.direction === 'left' && !isSelected && styles.leftText,
+                    item.text.includes('Derecha') && !isSelected && styles.rightText,
+                    item.text.includes('Izquierda') && !isSelected && styles.leftText,
                   ]}
                 >
                   {item.type === 'distance' ? `${item.text}m` : item.text}
