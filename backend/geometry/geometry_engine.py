@@ -287,11 +287,12 @@ def analyze_polyline(
     telemetry: list[dict] | None = None,
     *,
     max_curve_radius: float = 250.0,
-    min_heading_change: float = 4.0,
+    min_local_heading_change: float = 2.0,
+    min_total_heading_change: float = 6.0,
     min_curve_length: float = 10.0,
     resample_spacing_m: float = 2.0,
     analysis_window_m: float = 8.0,
-    gap_tolerance_m: float = 6.0,
+    gap_tolerance_m: float = 8.0,
 ) -> list[Curve]:
     raw_points = polyline.decode(encoded_polyline)
     if len(raw_points) < 3:
@@ -320,10 +321,7 @@ def analyze_polyline(
         end_idx = int(current["end_idx"])
         length = distances[end_idx] - distances[start_idx]
         heading_change = _signed_heading_change(points, start_idx, end_idx)
-        if (
-            length >= min_curve_length
-            and abs(heading_change) >= min_heading_change * 1.5
-        ):
+        if length >= min_curve_length and abs(heading_change) >= min_total_heading_change:
             current["start_distance"] = distances[start_idx]
             current["end_distance"] = distances[end_idx]
             current["heading_change"] = heading_change
@@ -341,7 +339,7 @@ def analyze_polyline(
         candidate = (
             np.isfinite(radius)
             and radius <= max_curve_radius
-            and abs(local_heading_change) >= min_heading_change
+            and abs(local_heading_change) >= min_local_heading_change
         )
 
         if not candidate:
