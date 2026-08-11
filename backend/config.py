@@ -49,6 +49,7 @@ class Settings:
         os.getenv("EXTERNAL_REQUEST_TIMEOUT_SECONDS"), 15.0
     )
     auto_create_db: bool = _as_bool(os.getenv("AUTO_CREATE_DB"), True)
+    service_token: str = os.getenv("RECCEMIND_SERVICE_TOKEN", "").strip()
 
 
 settings = Settings()
