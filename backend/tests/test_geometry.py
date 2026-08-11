@@ -2,7 +2,7 @@ import math
 
 import polyline
 
-from geometry.classification_engine import classify_curve
+from geometry.classification_engine import classify_curve, classify_curves
 from geometry.geometry_engine import (
     EARTH_RADIUS_M,
     Curve,
@@ -11,6 +11,7 @@ from geometry.geometry_engine import (
     haversine_distance,
     parse_telemetry_csv,
     resample_points,
+    summarize_radius_profile,
 )
 from geometry.pacenote_generator import generate_pacenotes, render_pacenote
 
@@ -63,6 +64,28 @@ def test_generate_pacenotes_returns_frontend_contract():
     assert notes[2]["text"] == "60"
     assert notes[3]["text"] == "Izquierda 3 larga se cierra"
     assert notes[3]["structured"]["modifiers"] == ["tightens"]
+
+
+def test_compound_curve_renders_entry_and_target_severity():
+    curves = [
+        {
+            "start_distance": 0,
+            "end_distance": 90,
+            "length": 90,
+            "direction": "Derecha",
+            "classification": 2,
+            "entry_classification": 5,
+            "exit_classification": 2,
+            "modifier": " se cierra",
+        }
+    ]
+
+    note = generate_pacenotes(curves)[0]
+
+    assert note["text"] == "Derecha 5 larga se cierra a 2"
+    assert note["structured"]["severity"] == 5
+    assert note["structured"]["target_severity"] == 2
+    assert note["structured"]["modifiers"] == ["tightens"]
 
 
 def test_structured_pacenote_renders_telemetry_warnings():
@@ -142,6 +165,44 @@ def test_curve_detection_is_stable_across_source_sampling_density():
     assert 60 <= abs(dense[0].heading_change) <= 110
 
 
+def test_radius_profile_detects_tightening_and_opening():
+    entry, exit_, modifier = summarize_radius_profile(
+        [120, 115, 105, 90, 70, 50, 35, 30, 28]
+    )
+    assert entry is not None and exit_ is not None
+    assert entry > exit_ * 2
+    assert modifier == " se cierra"
+
+    entry, exit_, modifier = summarize_radius_profile(
+        [28, 30, 35, 50, 70, 90, 105, 115, 120]
+    )
+    assert entry is not None and exit_ is not None
+    assert exit_ > entry * 2
+    assert modifier == " se abre"
+
+
+def test_classification_exposes_entry_and_exit_severity():
+    curve = Curve(
+        0,
+        10,
+        0,
+        90,
+        90,
+        45,
+        80,
+        "Derecha",
+        modifier=" se cierra",
+        entry_radius=110,
+        exit_radius=30,
+    )
+
+    payload = classify_curves([curve])[0]
+
+    assert payload["classification"] == 3
+    assert payload["entry_classification"] == 5
+    assert payload["exit_classification"] == 2
+
+
 def test_telemetry_parser_skips_invalid_rows():
     points, telemetry = parse_telemetry_csv(
         "lat,lon,speed,brake,gear\n28.1,-15.4,30,0.4,3\ninvalid,-15.5,20,0,2\n"
@@ -157,8 +218,23 @@ def test_speed_profile_respects_requested_cap():
     assert max(speeds) <= 30
 
 
-def test_curve_serialization_keeps_optional_telemetry():
-    curve = Curve(0, 4, 0, 30, 30, 45, 60, "Derecha", max_speed=20, min_gear=2)
+def test_curve_serialization_keeps_optional_telemetry_and_profile():
+    curve = Curve(
+        0,
+        4,
+        0,
+        30,
+        30,
+        45,
+        60,
+        "Derecha",
+        entry_radius=80,
+        exit_radius=35,
+        max_speed=20,
+        min_gear=2,
+    )
     payload = curve.to_dict()
+    assert payload["entry_radius"] == 80
+    assert payload["exit_radius"] == 35
     assert payload["max_speed"] == 20
     assert payload["min_gear"] == 2
