@@ -20,7 +20,29 @@ class MapsService:
         self.timeout_seconds = timeout_seconds
         self.session = session or requests.Session()
 
-    def get_route(self, origin: str, destination: str) -> dict[str, Any]:
+    @staticmethod
+    def _waypoint(address: str | None, coordinates: list[float] | None) -> dict[str, Any]:
+        if coordinates is not None:
+            latitude, longitude = coordinates
+            return {
+                "location": {
+                    "latLng": {
+                        "latitude": latitude,
+                        "longitude": longitude,
+                    }
+                }
+            }
+        if address:
+            return {"address": address}
+        raise MapsServiceError("Route endpoint is missing")
+
+    def get_route(
+        self,
+        origin: str | None,
+        destination: str | None,
+        origin_coords: list[float] | None = None,
+        destination_coords: list[float] | None = None,
+    ) -> dict[str, Any]:
         url = "https://routes.googleapis.com/directions/v2:computeRoutes"
         headers = {
             "Content-Type": "application/json",
@@ -28,8 +50,8 @@ class MapsService:
             "X-Goog-FieldMask": "routes.polyline,routes.distanceMeters,routes.duration",
         }
         payload = {
-            "origin": {"address": origin},
-            "destination": {"address": destination},
+            "origin": self._waypoint(origin, origin_coords),
+            "destination": self._waypoint(destination, destination_coords),
             "travelMode": "DRIVE",
         }
 
