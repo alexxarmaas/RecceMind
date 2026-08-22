@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
 import tempfile
+import zipfile
 from pathlib import Path
 from secrets import compare_digest
 from typing import Annotated
@@ -73,6 +75,15 @@ async def _read_limited(upload: UploadFile) -> bytes:
     return content
 
 
+def _parse_form_thresholds(thresholds: str | None, label: str) -> dict[int, float] | None:
+    if not thresholds:
+        return None
+    try:
+        return _threshold_adapter.validate_python(json.loads(thresholds))
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid {label} thresholds") from exc
+
+
 def _analyze_encoded_polyline(
     encoded_polyline: str,
     thresholds: dict[int, float] | None,
@@ -96,6 +107,69 @@ def _analyze_encoded_polyline(
     }
 
 
+def _parse_kml_coordinate_text(text: str | None) -> list[tuple[float, float]]:
+    points: list[tuple[float, float]] = []
+    if not text:
+        return points
+    for raw_coordinate in text.replace("\n", " ").replace("\t", " ").split():
+        parts = raw_coordinate.split(",")
+        if len(parts) < 2:
+            continue
+        try:
+            longitude = float(parts[0])
+            latitude = float(parts[1])
+        except ValueError:
+            continue
+        if -90 <= latitude <= 90 and -180 <= longitude <= 180:
+            points.append((latitude, longitude))
+    return points
+
+
+def _extract_kmz_tracks(content: bytes) -> list[dict]:
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Invalid KMZ archive") from exc
+
+    max_uncompressed = settings.max_upload_bytes * 4
+    kml_members = [member for member in archive.infolist() if member.filename.lower().endswith(".kml")]
+    if not kml_members:
+        raise HTTPException(status_code=400, detail="KMZ does not contain a KML document")
+    if sum(member.file_size for member in kml_members) > max_uncompressed:
+        raise HTTPException(status_code=413, detail="KMZ expands beyond the allowed size")
+
+    tracks: list[dict] = []
+    for member in kml_members:
+        try:
+            root = ET.fromstring(archive.read(member))
+        except ET.ParseError:
+            continue
+
+        for placemark in root.iter():
+            if not str(placemark.tag).endswith("Placemark"):
+                continue
+            name = ""
+            for child in placemark:
+                if str(child.tag).endswith("name") and child.text:
+                    name = child.text.strip()
+                    break
+            for line_string in placemark.iter():
+                if not str(line_string.tag).endswith("LineString"):
+                    continue
+                coordinate_text = None
+                for node in line_string.iter():
+                    if str(node.tag).endswith("coordinates"):
+                        coordinate_text = node.text
+                        break
+                points = _parse_kml_coordinate_text(coordinate_text)
+                if len(points) >= 3:
+                    tracks.append({"name": name or Path(member.filename).stem, "points": points})
+
+    if not tracks:
+        raise HTTPException(status_code=400, detail="KMZ does not contain a valid LineString stage")
+    return tracks
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -111,7 +185,12 @@ def analyze_route(request: RouteRequest):
         timeout_seconds=settings.external_request_timeout_seconds,
     )
     try:
-        route_data = maps_service.get_route(request.origin, request.destination)
+        route_data = maps_service.get_route(
+            request.origin,
+            request.destination,
+            request.origin_coords,
+            request.destination_coords,
+        )
     except MapsServiceError as exc:
         logger.warning("Google Routes failed: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -178,19 +257,39 @@ def process_gpx(request: GpxRequest):
     return result
 
 
+@router.post("/process-kmz")
+async def process_kmz(
+    file: Annotated[UploadFile, File(...)],
+    thresholds: Annotated[str | None, Form()] = None,
+    driver_id: Annotated[str, Form(min_length=1, max_length=100)] = "default",
+):
+    parsed_thresholds = _parse_form_thresholds(thresholds, "KMZ")
+    content = await _read_limited(file)
+    tracks = _extract_kmz_tracks(content)
+    selected = max(tracks, key=lambda track: len(track["points"]))
+    result = _analyze_encoded_polyline(
+        polyline.encode(selected["points"]),
+        parsed_thresholds,
+        driver_id,
+    )
+    result.update(
+        {
+            "distanceMeters": 0,
+            "duration": "0s",
+            "sourceName": selected["name"],
+            "kmzTrackCount": len(tracks),
+        }
+    )
+    return result
+
+
 @router.post("/process-telemetry")
 async def process_telemetry(
     file: Annotated[UploadFile, File(...)],
     thresholds: Annotated[str | None, Form()] = None,
     driver_id: Annotated[str, Form(min_length=1, max_length=100)] = "default",
 ):
-    parsed_thresholds = None
-    if thresholds:
-        try:
-            parsed_thresholds = _threshold_adapter.validate_python(json.loads(thresholds))
-        except (json.JSONDecodeError, ValidationError) as exc:
-            raise HTTPException(status_code=422, detail="Invalid telemetry thresholds") from exc
-
+    parsed_thresholds = _parse_form_thresholds(thresholds, "telemetry")
     content = await _read_limited(file)
     try:
         content_text = content.decode("utf-8-sig")
