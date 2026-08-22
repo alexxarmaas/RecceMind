@@ -170,6 +170,17 @@ def _extract_kmz_tracks(content: bytes) -> list[dict]:
     return tracks
 
 
+def _kmz_track_summaries(tracks: list[dict]) -> list[dict]:
+    return [
+        {
+            "index": index,
+            "name": track["name"],
+            "pointCount": len(track["points"]),
+        }
+        for index, track in enumerate(tracks)
+    ]
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -257,16 +268,36 @@ def process_gpx(request: GpxRequest):
     return result
 
 
+@router.post("/inspect-kmz")
+async def inspect_kmz(file: Annotated[UploadFile, File(...)]):
+    content = await _read_limited(file)
+    tracks = _extract_kmz_tracks(content)
+    default_index = max(range(len(tracks)), key=lambda index: len(tracks[index]["points"]))
+    return {
+        "tracks": _kmz_track_summaries(tracks),
+        "defaultTrackIndex": default_index,
+    }
+
+
 @router.post("/process-kmz")
 async def process_kmz(
     file: Annotated[UploadFile, File(...)],
     thresholds: Annotated[str | None, Form()] = None,
     driver_id: Annotated[str, Form(min_length=1, max_length=100)] = "default",
+    track_index: Annotated[int | None, Form(ge=0)] = None,
 ):
     parsed_thresholds = _parse_form_thresholds(thresholds, "KMZ")
     content = await _read_limited(file)
     tracks = _extract_kmz_tracks(content)
-    selected = max(tracks, key=lambda track: len(track["points"]))
+
+    if track_index is None:
+        selected_index = max(range(len(tracks)), key=lambda index: len(tracks[index]["points"]))
+    elif track_index >= len(tracks):
+        raise HTTPException(status_code=422, detail="KMZ track index is outside the available range")
+    else:
+        selected_index = track_index
+
+    selected = tracks[selected_index]
     result = _analyze_encoded_polyline(
         polyline.encode(selected["points"]),
         parsed_thresholds,
@@ -278,6 +309,7 @@ async def process_kmz(
             "duration": "0s",
             "sourceName": selected["name"],
             "kmzTrackCount": len(tracks),
+            "selectedTrackIndex": selected_index,
         }
     )
     return result
