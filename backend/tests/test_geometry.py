@@ -2,7 +2,7 @@ import math
 
 import polyline
 
-from geometry.classification_engine import classify_curve, classify_curves
+from geometry.classification_engine import classify_curve, classify_curves, rule_confidence
 from geometry.geometry_engine import (
     EARTH_RADIUS_M,
     Curve,
@@ -24,6 +24,15 @@ def test_classify_curve_accepts_json_string_keys():
     assert classify_curve(46, thresholds) == 3
     assert classify_curve(26, thresholds) == 2
     assert classify_curve(10, thresholds) == 1
+
+
+def test_rule_confidence_is_lower_close_to_classification_boundary():
+    near_boundary = rule_confidence(61)
+    middle_of_band = rule_confidence(80)
+
+    assert 0.5 <= near_boundary <= 1
+    assert 0.5 <= middle_of_band <= 1
+    assert near_boundary < middle_of_band
 
 
 def test_generate_pacenotes_returns_frontend_contract():
@@ -181,7 +190,7 @@ def test_radius_profile_detects_tightening_and_opening():
     assert modifier == " se abre"
 
 
-def test_classification_exposes_entry_and_exit_severity():
+def test_classification_exposes_entry_exit_and_confidence_metadata():
     curve = Curve(
         0,
         10,
@@ -201,6 +210,10 @@ def test_classification_exposes_entry_and_exit_severity():
     assert payload["classification"] == 3
     assert payload["entry_classification"] == 5
     assert payload["exit_classification"] == 2
+    assert payload["classification_source"] == "rule"
+    assert 0.5 <= payload["classification_confidence"] <= 1
+    assert 0.5 <= payload["entry_confidence"] <= 1
+    assert 0.5 <= payload["exit_confidence"] <= 1
 
 
 def test_telemetry_parser_skips_invalid_rows():
