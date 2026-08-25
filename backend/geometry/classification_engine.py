@@ -43,6 +43,39 @@ def classify_curve(radius: float, thresholds: dict | None = None) -> int:
     return 1
 
 
+def rule_confidence(radius: float, thresholds: dict | None = None) -> float:
+    """Estimate confidence for threshold-based classification.
+
+    Confidence is intentionally lowest close to a severity boundary and rises
+    towards the middle of a band. Extreme classes use their nearest boundary
+    and the adjacent band width as a scale. This is not a calibrated
+    probability; it is a review-priority signal until enough driver feedback
+    exists to use the ML classifier probability directly.
+    """
+
+    current = normalize_thresholds(thresholds)
+    classification = classify_curve(radius, current)
+
+    if classification == 6:
+        boundary = current[6]
+        scale = max(abs(current[6] - current[5]), 10.0)
+        normalized_margin = max(0.0, min(1.0, (radius - boundary) / scale))
+    elif classification == 1:
+        boundary = current[2]
+        scale = max(abs(current[3] - current[2]), 10.0)
+        normalized_margin = max(0.0, min(1.0, (boundary - radius) / scale))
+    else:
+        lower = current[classification]
+        upper = current[classification + 1]
+        width = upper - lower
+        if width <= 0:
+            return 0.55
+        margin = min(radius - lower, upper - radius)
+        normalized_margin = max(0.0, min(1.0, margin / (width / 2)))
+
+    return round(0.55 + 0.40 * normalized_margin, 3)
+
+
 def train_model(feedbacks: Iterable, driver_id: str = "default") -> bool:
     feedback_list = list(feedbacks)
     labels = {feedback.user_classification for feedback in feedback_list}
@@ -75,11 +108,11 @@ def train_model(feedbacks: Iterable, driver_id: str = "default") -> bool:
     return True
 
 
-def classify_curve_ml(
+def classify_curve_with_confidence(
     curve: Curve,
     thresholds: dict | None = None,
     driver_id: str = "default",
-) -> int:
+) -> tuple[int, float, str]:
     with _model_lock:
         classifier = _ml_models.get(driver_id)
 
@@ -89,10 +122,24 @@ def classify_curve_ml(
                 [[curve.radius, abs(curve.heading_change), curve.length]],
                 dtype=float,
             )
-            return int(classifier.predict(features)[0])
-        except (TypeError, ValueError):
+            prediction = int(classifier.predict(features)[0])
+            probabilities = classifier.predict_proba(features)[0]
+            confidence = float(np.max(probabilities))
+            return prediction, round(max(0.0, min(1.0, confidence)), 3), "ml"
+        except (AttributeError, TypeError, ValueError):
             pass
-    return classify_curve(curve.radius, thresholds)
+
+    classification = classify_curve(curve.radius, thresholds)
+    return classification, rule_confidence(curve.radius, thresholds), "rule"
+
+
+def classify_curve_ml(
+    curve: Curve,
+    thresholds: dict | None = None,
+    driver_id: str = "default",
+) -> int:
+    classification, _, _ = classify_curve_with_confidence(curve, thresholds, driver_id)
+    return classification
 
 
 def classify_curves(
@@ -102,18 +149,29 @@ def classify_curves(
 ) -> list[dict]:
     result: list[dict] = []
     for curve in curves:
-        classification = classify_curve_ml(curve, thresholds, driver_id)
+        classification, confidence, source = classify_curve_with_confidence(
+            curve,
+            thresholds,
+            driver_id,
+        )
         curve_data = curve.to_dict()
         curve_data["classification"] = classification
-        curve_data["entry_classification"] = (
-            classify_curve(curve.entry_radius, thresholds)
-            if curve.entry_radius is not None
-            else classification
-        )
-        curve_data["exit_classification"] = (
-            classify_curve(curve.exit_radius, thresholds)
-            if curve.exit_radius is not None
-            else classification
-        )
+        curve_data["classification_confidence"] = confidence
+        curve_data["classification_source"] = source
+
+        if curve.entry_radius is not None:
+            curve_data["entry_classification"] = classify_curve(curve.entry_radius, thresholds)
+            curve_data["entry_confidence"] = rule_confidence(curve.entry_radius, thresholds)
+        else:
+            curve_data["entry_classification"] = classification
+            curve_data["entry_confidence"] = confidence
+
+        if curve.exit_radius is not None:
+            curve_data["exit_classification"] = classify_curve(curve.exit_radius, thresholds)
+            curve_data["exit_confidence"] = rule_confidence(curve.exit_radius, thresholds)
+        else:
+            curve_data["exit_classification"] = classification
+            curve_data["exit_confidence"] = confidence
+
         result.append(curve_data)
     return result
